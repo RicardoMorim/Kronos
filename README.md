@@ -62,6 +62,17 @@
 1. A specialized tokenizer first quantizes continuous, multi-dimensional K-line data (OHLCV) into **hierarchical discrete tokens**. 
 2. A large, autoregressive Transformer is then pre-trained on these tokens, enabling it to serve as a unified model for diverse quantitative tasks.
 
+## 🗺️ Documentation map
+
+If you want to navigate the repository quickly in Obsidian, start here:
+
+- `obsidian/Kronos/index.md` — main index for the repo map
+- `obsidian/Kronos/00-project-overview.md` — high-level project summary
+- `obsidian/Kronos/02-data/data-contract.md` — canonical data schema
+- `obsidian/Kronos/03-training/training-overview.md` — training paths and horizon notes
+
+This map is designed to keep notes short, linkable, and easy to expand as the project grows.
+
 <p align="center">
     <img src="figures/overview.png" alt="" align="center" width="700px" />
 </p>
