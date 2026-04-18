@@ -80,6 +80,29 @@ You can then train directly with a generated config:
 python finetune_csv/train_sequential.py --config finetune_csv/configs/config_bybit_btcusdt_60m.yaml
 ```
 
+Or run dual-timeframe training orchestration (1H then 5m):
+
+```bash
+# smoke mode uses 1 epoch and smaller batch for quick pipeline checks
+python finetune_csv/train_dual_timeframe.py --smoke
+
+# full run with generated configs
+python finetune_csv/train_dual_timeframe.py \
+  --config-1h finetune_csv/configs/config_bybit_btcusdt_60m.yaml \
+  --config-5m finetune_csv/configs/config_bybit_btcusdt_5m.yaml
+```
+
+After datasets are prepared, you can also generate a dual-timeframe signal with pretrained checkpoints:
+
+```bash
+python examples/generate_dual_timeframe_signal.py \
+  --csv-1h finetune_csv/data/bybit/bybit_BTCUSDT_60m.csv \
+  --csv-5m finetune_csv/data/bybit/bybit_BTCUSDT_5m.csv \
+  --model NeoQuasar/Kronos-small \
+  --tokenizer NeoQuasar/Kronos-Tokenizer-base \
+  --output finetune_csv/data/bybit/latest_signal.json
+```
+
 ## 3. Training
 
 ### Method 1: Sequential Training (Recommended)
