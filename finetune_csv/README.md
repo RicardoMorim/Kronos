@@ -47,6 +47,39 @@ data:
 ```
 There are some other settings here, please see `configs/config_ali09988_candle-5min.yaml` for more comments.
 
+## 2.5 Prepare Bybit datasets (1H + 5m)
+
+You can prepare Bybit public candles directly into Kronos-compatible CSV files and optionally generate training configs in one step.
+
+```bash
+# from repo root
+python finetune_csv/prepare_bybit_datasets.py \
+  --symbol BTCUSDT \
+  --category linear \
+  --intervals 60,5 \
+  --max-pages 40 \
+  --write-configs
+```
+
+This command generates:
+
+- CSV datasets under `finetune_csv/data/bybit/`
+  - `bybit_BTCUSDT_60m.csv`
+  - `bybit_BTCUSDT_5m.csv`
+- Config files under `finetune_csv/configs/`
+  - `config_bybit_btcusdt_60m.yaml`
+  - `config_bybit_btcusdt_5m.yaml`
+- A summary file at `finetune_csv/data/bybit/prepare_summary.json`
+
+The CSV schema is normalized to:
+`timestamps, open, high, low, close, volume, amount`
+
+You can then train directly with a generated config:
+
+```bash
+python finetune_csv/train_sequential.py --config finetune_csv/configs/config_bybit_btcusdt_60m.yaml
+```
+
 ## 3. Training
 
 ### Method 1: Sequential Training (Recommended)
