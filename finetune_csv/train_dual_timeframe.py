@@ -57,8 +57,150 @@ def dump_yaml(path: Path, data: dict[str, Any]) -> None:
         yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
 
 
+def _normalize_path_like(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    candidate = Path(value)
+    if candidate.is_absolute():
+        return str(candidate)
+    return str((REPO_ROOT / candidate).resolve())
+
+
+def normalize_config_paths(data: dict[str, Any]) -> dict[str, Any]:
+    cfg = dict(data)
+
+    data_section = dict(cfg.get("data") or {})
+    if "data_path" in data_section:
+        data_section["data_path"] = _normalize_path_like(data_section["data_path"])
+    cfg["data"] = data_section
+
+    model_paths = dict(cfg.get("model_paths") or {})
+    for key in ("pretrained_tokenizer", "pretrained_predictor", "base_path", "finetuned_tokenizer", "base_save_path"):
+        if key in model_paths and model_paths[key]:
+            current = str(model_paths[key])
+            # Keep Hugging Face IDs untouched (e.g., NeoQuasar/Kronos-small)
+            if "/" in current and not current.startswith(".") and not current.startswith("..") and not current.startswith("~") and not current.startswith("C:") and not current.startswith("/"):
+                continue
+            model_paths[key] = _normalize_path_like(current)
+    cfg["model_paths"] = model_paths
+
+    return cfg
+
+
+def _count_csv_rows(file_path: Path) -> int:
+    with file_path.open("r", encoding="utf-8") as f:
+        row_count = sum(1 for _ in f)
+    return max(0, row_count - 1)  # minus header
+
+
+def _compute_split_lengths(total_rows: int, train_ratio: float, val_ratio: float) -> tuple[int, int]:
+    train_end = int(total_rows * train_ratio)
+    val_end = int(total_rows * (train_ratio + val_ratio))
+    train_len = train_end
+    val_len = max(0, val_end - train_end)
+    return train_len, val_len
+
+
+def adapt_config_for_dataset(cfg: dict[str, Any], min_train_ratio: float = 0.60) -> tuple[dict[str, Any], list[str]]:
+    adapted = dict(cfg)
+    data_section = dict(adapted.get("data") or {})
+
+    data_path_raw = data_section.get("data_path")
+    if not data_path_raw:
+        return adapted, []
+
+    data_path = Path(str(data_path_raw))
+    if not data_path.exists():
+        return adapted, []
+
+    total_rows = _count_csv_rows(data_path)
+    if total_rows <= 0:
+        return adapted, []
+
+    lookback = int(data_section.get("lookback_window", 512))
+    predict_window = int(data_section.get("predict_window", 48))
+    max_context = int(data_section.get("max_context", lookback))
+
+    train_ratio = float(data_section.get("train_ratio", 0.9))
+    val_ratio = float(data_section.get("val_ratio", 0.1))
+    test_ratio = float(data_section.get("test_ratio", 0.0))
+
+    window = lookback + predict_window + 1
+    messages: list[str] = []
+
+    train_len, val_len = _compute_split_lengths(total_rows, train_ratio, val_ratio)
+
+    # Step 1: try to preserve window by increasing validation ratio when possible
+    if val_len < window:
+        required_val_ratio = (window + 16) / max(total_rows, 1)
+        target_val_ratio = max(val_ratio, min(0.35, required_val_ratio))
+        target_train_ratio = 1.0 - test_ratio - target_val_ratio
+
+        if target_train_ratio >= min_train_ratio and target_val_ratio > val_ratio:
+            train_ratio = target_train_ratio
+            val_ratio = target_val_ratio
+            data_section["train_ratio"] = round(train_ratio, 4)
+            data_section["val_ratio"] = round(val_ratio, 4)
+            train_len, val_len = _compute_split_lengths(total_rows, train_ratio, val_ratio)
+            messages.append(
+                "Adjusted split ratios for dataset size: "
+                f"train_ratio={data_section['train_ratio']}, val_ratio={data_section['val_ratio']}, test_ratio={test_ratio}"
+            )
+
+    # Step 2: if still insufficient, reduce window settings conservatively
+    if val_len < window:
+        max_window_for_val = max(2, val_len - 1)
+        if max_window_for_val < 2:
+            raise ValueError(
+                "Validation split is too small even after adaptation. "
+                f"total_rows={total_rows}, val_len={val_len}. Increase dataset size."
+            )
+
+        new_predict = min(predict_window, max(8, max_window_for_val // 6))
+        if new_predict >= max_window_for_val:
+            new_predict = max(1, max_window_for_val - 1)
+        new_lookback = max(8, max_window_for_val - new_predict)
+
+        if new_lookback < lookback or new_predict < predict_window:
+            data_section["lookback_window"] = new_lookback
+            data_section["predict_window"] = new_predict
+            data_section["max_context"] = max(max_context, new_lookback)
+            lookback = new_lookback
+            predict_window = new_predict
+            window = lookback + predict_window + 1
+            messages.append(
+                "Reduced windows for dataset size: "
+                f"lookback_window={lookback}, predict_window={predict_window}, max_context={data_section['max_context']}"
+            )
+
+    # Final guard
+    train_len, val_len = _compute_split_lengths(total_rows, train_ratio, val_ratio)
+    train_samples = train_len - (lookback + predict_window + 1) + 1
+    val_samples = val_len - (lookback + predict_window + 1) + 1
+    if train_samples <= 0 or val_samples <= 0:
+        raise ValueError(
+            "Auto-adaptation could not produce valid sample counts. "
+            f"train_samples={train_samples}, val_samples={val_samples}, total_rows={total_rows}, "
+            f"lookback={lookback}, predict={predict_window}, train_ratio={train_ratio}, val_ratio={val_ratio}."
+        )
+
+    adapted["data"] = data_section
+    return adapted, messages
+
+
 def apply_smoke_overrides(data: dict[str, Any]) -> dict[str, Any]:
     cfg = dict(data)
+
+    data_section = dict(cfg.get("data") or {})
+    # Make smoke mode resilient on small datasets (e.g., ~2000 rows)
+    data_section["lookback_window"] = min(int(data_section.get("lookback_window", 512)), 128)
+    data_section["predict_window"] = min(int(data_section.get("predict_window", 48)), 16)
+    data_section["max_context"] = max(int(data_section.get("max_context", 512)), data_section["lookback_window"])
+    data_section["train_ratio"] = 0.75
+    data_section["val_ratio"] = 0.20
+    data_section["test_ratio"] = 0.05
+    cfg["data"] = data_section
+
     training = dict(cfg.get("training") or {})
     training["tokenizer_epochs"] = 1
     training["basemodel_epochs"] = 1
@@ -80,7 +222,7 @@ def build_train_command(
 ) -> list[str]:
     command = [
         python_executable,
-        "train_sequential.py",
+        "finetune_csv/train_sequential.py",
         "--config",
         str(config_path.as_posix()),
     ]
@@ -97,18 +239,25 @@ def run_training(
     skip_tokenizer: bool,
     skip_basemodel: bool,
     python_executable: str,
+    auto_adapt_data: bool,
 ) -> None:
     effective_config_path = config_path
     temp_file_path: Path | None = None
 
     try:
-        if smoke_mode:
-            original = load_yaml(config_path)
-            modified = apply_smoke_overrides(original)
-            with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8") as temp_file:
-                temp_file_path = Path(temp_file.name)
-            dump_yaml(temp_file_path, modified)
-            effective_config_path = temp_file_path
+        original = load_yaml(config_path)
+        normalized = normalize_config_paths(original)
+        effective_cfg = apply_smoke_overrides(normalized) if smoke_mode else normalized
+
+        if auto_adapt_data:
+            effective_cfg, adaptation_messages = adapt_config_for_dataset(effective_cfg)
+            for msg in adaptation_messages:
+                print(f"[auto-adapt] {msg}")
+
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8") as temp_file:
+            temp_file_path = Path(temp_file.name)
+        dump_yaml(temp_file_path, effective_cfg)
+        effective_config_path = temp_file_path
 
         cmd = build_train_command(
             config_path=effective_config_path,
@@ -117,7 +266,7 @@ def run_training(
             python_executable=python_executable,
         )
         print(f"[run] {' '.join(cmd)}")
-        subprocess.run(cmd, cwd=FINETUNE_CSV_DIR, check=True)
+        subprocess.run(cmd, cwd=REPO_ROOT, check=True)
     finally:
         if temp_file_path is not None:
             try:
@@ -142,6 +291,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-tokenizer", action="store_true", help="Skip tokenizer phase")
     parser.add_argument("--skip-basemodel", action="store_true", help="Skip basemodel phase")
     parser.add_argument("--python", default=None, help="Python executable path for the child training process")
+    parser.add_argument(
+        "--auto-adapt-data",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Automatically adapt split/window settings to dataset size before launching training",
+    )
     return parser.parse_args()
 
 
@@ -165,6 +320,7 @@ def main() -> None:
         skip_tokenizer=args.skip_tokenizer,
         skip_basemodel=args.skip_basemodel,
         python_executable=python_executable,
+        auto_adapt_data=args.auto_adapt_data,
     )
 
     print("=== Dual-timeframe training: 5m ===")
@@ -174,6 +330,7 @@ def main() -> None:
         skip_tokenizer=args.skip_tokenizer,
         skip_basemodel=args.skip_basemodel,
         python_executable=python_executable,
+        auto_adapt_data=args.auto_adapt_data,
     )
 
     print("Dual-timeframe training completed.")

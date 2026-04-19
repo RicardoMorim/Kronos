@@ -117,6 +117,14 @@ def create_dataloaders(config):
         val_ratio=config.val_ratio,
         test_ratio=config.test_ratio
     )
+
+    if len(train_dataset) <= 0 or len(val_dataset) <= 0:
+        raise ValueError(
+            "Insufficient samples after split. "
+            f"train_samples={len(train_dataset)}, val_samples={len(val_dataset)}. "
+            f"Need window=lookback({config.lookback_window}) + predict({config.predict_window}) + 1. "
+            "Try increasing dataset size or reducing lookback/predict windows."
+        )
     
     use_ddp = dist.is_available() and dist.is_initialized()
     train_sampler = DistributedSampler(train_dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank(), shuffle=True) if use_ddp else None
