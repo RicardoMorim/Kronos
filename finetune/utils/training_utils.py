@@ -10,25 +10,34 @@ def setup_ddp():
     """
     Initializes the distributed data parallel environment.
 
-    Automatically selects the correct backend:
-    - 'nccl' on Linux (optimal for GPU-to-GPU communication)
-    - 'gloo' on Windows/MacOS (nccl is not supported on these platforms)
-
-    Returns:
-        tuple: A tuple containing (rank, world_size, local_rank).
+    Supports both torchrun-launched DDP and single-process fallback
+    (useful on Windows / 1-GPU setups).
     """
     if not dist.is_available():
         raise RuntimeError("torch.distributed is not available.")
 
-    backend = "nccl" if os.name != "nt" else "gloo"
-    dist.init_process_group(backend=backend)
-    rank = int(os.environ["RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
+    # Detect if we're under torchrun (env vars set) or single process
+    rank = int(os.environ.get("RANK", "0"))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", str(rank)))
+
+    if not dist.is_initialized():
+        # On Windows, use 'gloo' backend; nccl is not supported
+        dist.init_process_group(
+            backend="gloo",
+            rank=rank,
+            world_size=world_size,
+        )
+
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f"cuda:{local_rank}")
+    else:
+        device = torch.device("cpu")
+
     print(
-        f"[DDP Setup] Backend: {backend}, Global Rank: {rank}/{world_size}, "
-        f"Local Rank (GPU): {local_rank} on device {torch.cuda.current_device()}"
+        f"[DDP Setup] Global Rank: {rank}/{world_size}, "
+        f"Local Rank: {local_rank}, Device: {device}"
     )
     return rank, world_size, local_rank
 

@@ -1,4 +1,5 @@
 import os
+os.environ["USE_LIBUV"] = "0"
 import sys
 import json
 import time
@@ -11,7 +12,6 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
-
 import comet_ml
 
 # Ensure project root is in path

@@ -184,9 +184,9 @@ def load_bybit_sources(start: pd.Timestamp, end: pd.Timestamp) -> dict[str, pd.D
     exchange.load_markets()
 
     sources: dict[str, pd.DataFrame] = {}
-
+    btc_symbol = resolve_bybit_symbol(exchange, "BTC")
     btc_60m = load_existing_bybit_csv(SOURCE_BYBIT_DIR / "bybit_BTCUSDT_60m.csv", "BTCUSDT_60m")
-    btc_5m = load_existing_bybit_csv(SOURCE_BYBIT_DIR / "bybit_BTCUSDT_5m.csv", "BTCUSDT_5m")
+    btc_5m = fetch_ccxt_ohlcv(exchange, btc_symbol, "5m", start, end)
     sources["BTCUSDT_60m"] = btc_60m
     sources["BTCUSDT_5m"] = btc_5m
 
