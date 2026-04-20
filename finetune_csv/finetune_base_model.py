@@ -272,6 +272,9 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
         model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
 
     best_val_loss = float('inf')
+    epochs_no_improve = 0
+    patience = max(0, int(getattr(config, 'basemodel_early_stopping_patience', 0)))
+    min_delta = float(getattr(config, 'early_stopping_min_delta', 0.0))
     batch_idx_global = 0
     
     for epoch in range(config.basemodel_epochs):
@@ -359,8 +362,9 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
         if rank == 0:
             print(epoch_summary)
         
-        if avg_val_loss < best_val_loss:
+        if avg_val_loss < (best_val_loss - min_delta):
             best_val_loss = avg_val_loss
+            epochs_no_improve = 0
             if rank == 0:
                 model_save_path = os.path.join(save_dir, "best_model")
                 os.makedirs(model_save_path, exist_ok=True)
@@ -368,6 +372,19 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
                 save_msg = f"Best model saved to: {model_save_path} (validation loss: {best_val_loss:.4f})"
                 logger.info(save_msg)
                 print(save_msg)
+        else:
+            epochs_no_improve += 1
+            if rank == 0 and patience > 0:
+                wait_msg = f"No validation improvement (min_delta={min_delta}) for {epochs_no_improve}/{patience} epoch(s)."
+                logger.info(wait_msg)
+                print(wait_msg)
+
+        if patience > 0 and epochs_no_improve >= patience:
+            stop_msg = f"Early stopping triggered at epoch {epoch+1}. Best validation loss: {best_val_loss:.4f}"
+            logger.info(stop_msg)
+            if rank == 0:
+                print(stop_msg)
+            break
     
     return best_val_loss
 

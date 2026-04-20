@@ -149,6 +149,14 @@ class CustomFinetuneConfig:
         self.adam_beta2 = training_config.get('adam_beta2', 0.95)
         self.adam_weight_decay = training_config.get('adam_weight_decay', 0.1)
         self.accumulation_steps = training_config.get('accumulation_steps', 1)
+        self.early_stopping_patience = training_config.get('early_stopping_patience', 0)
+        self.early_stopping_min_delta = training_config.get('early_stopping_min_delta', 0.0)
+        self.tokenizer_early_stopping_patience = training_config.get(
+            'tokenizer_early_stopping_patience', self.early_stopping_patience
+        )
+        self.basemodel_early_stopping_patience = training_config.get(
+            'basemodel_early_stopping_patience', self.early_stopping_patience
+        )
         
         model_paths = self.loader.get_model_paths()
         self.exp_name = model_paths.get('exp_name', 'default_experiment')
@@ -210,6 +218,8 @@ class CustomFinetuneConfig:
             'adam_beta2': self.adam_beta2,
             'adam_weight_decay': self.adam_weight_decay,
             'accumulation_steps': self.accumulation_steps,
+            'early_stopping_min_delta': self.early_stopping_min_delta,
+            'tokenizer_early_stopping_patience': self.tokenizer_early_stopping_patience,
             'pretrained_model_path': self.pretrained_tokenizer_path,
             'save_path': self.tokenizer_save_path,
             'use_comet': self.use_comet
@@ -236,6 +246,8 @@ class CustomFinetuneConfig:
             'adam_beta1': self.adam_beta1,
             'adam_beta2': self.adam_beta2,
             'adam_weight_decay': self.adam_weight_decay,
+            'early_stopping_min_delta': self.early_stopping_min_delta,
+            'basemodel_early_stopping_patience': self.basemodel_early_stopping_patience,
             'pretrained_tokenizer_path': self.finetuned_tokenizer_path,
             'pretrained_predictor_path': self.pretrained_predictor_path,
             'save_path': self.basemodel_save_path,
@@ -256,6 +268,10 @@ class CustomFinetuneConfig:
         print(f"Batch size: {self.batch_size}")
         print(f"Tokenizer learning rate: {self.tokenizer_learning_rate}")
         print(f"Predictor learning rate: {self.predictor_learning_rate}")
+        print(f"Adam weight decay: {self.adam_weight_decay}")
+        print(f"Early stopping min delta: {self.early_stopping_min_delta}")
+        print(f"Tokenizer early stopping patience: {self.tokenizer_early_stopping_patience}")
+        print(f"Basemodel early stopping patience: {self.basemodel_early_stopping_patience}")
         print(f"Train tokenizer: {self.train_tokenizer}")
         print(f"Train basemodel: {self.train_basemodel}")
         print(f"Skip existing: {self.skip_existing}")

@@ -5,28 +5,28 @@
     "60",
     "5"
   ],
-  "created_at_utc": "2026-04-18T16:20:49.217799+00:00",
+  "created_at_utc": "2026-04-19T18:46:00.186615+00:00",
   "datasets": [
     {
       "interval": "60",
-      "rows": 2000,
+      "rows": 17520,
       "csv_path": "finetune_csv/data/bybit/bybit_BTCUSDT_60m.csv",
-      "requested_start_ms": 1713457249217,
-      "requested_end_ms": 1776529249217,
-      "actual_start_ms": 1769331600000,
-      "actual_end_ms": 1776528000000,
+      "requested_start_ms": 1713552360186,
+      "requested_end_ms": 1776624360186,
+      "actual_start_ms": 1713553200000,
+      "actual_end_ms": 1776621600000,
       "history_days": 730,
       "config_path": "finetune_csv/configs/config_bybit_btcusdt_60m.yaml"
     },
     {
       "interval": "5",
-      "rows": 2000,
+      "rows": 200000,
       "csv_path": "finetune_csv/data/bybit/bybit_BTCUSDT_5m.csv",
-      "requested_start_ms": 1760977250987,
-      "requested_end_ms": 1776529250987,
-      "actual_start_ms": 1775929500000,
-      "actual_end_ms": 1776529200000,
-      "history_days": 180,
+      "requested_start_ms": 1713552370581,
+      "requested_end_ms": 1776624370581,
+      "actual_start_ms": 1716624600000,
+      "actual_end_ms": 1776624300000,
+      "history_days": 730,
       "config_path": "finetune_csv/configs/config_bybit_btcusdt_5m.yaml"
     }
   ]

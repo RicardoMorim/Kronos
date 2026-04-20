@@ -13,7 +13,7 @@ data:
 
 training:
   tokenizer_epochs: 20
-  basemodel_epochs: 20
+  basemodel_epochs: 10
   batch_size: 32
   log_interval: 50
   num_workers: 4
@@ -24,7 +24,12 @@ training:
 
   adam_beta1: 0.9
   adam_beta2: 0.95
-  adam_weight_decay: 0.1
+  adam_weight_decay: 0.15
+
+  # Early stopping
+  early_stopping_min_delta: 0.001
+  tokenizer_early_stopping_patience: 5
+  basemodel_early_stopping_patience: 5
 
   accumulation_steps: 1
 
