@@ -7,8 +7,8 @@ data:
   predict_window: 48
   max_context: 512
   clip: 5.0
-  train_ratio: 0.9
-  val_ratio: 0.1
+  train_ratio: 0.85
+  val_ratio: 0.15
   test_ratio: 0.0
 
 training:
@@ -24,12 +24,12 @@ training:
 
   adam_beta1: 0.9
   adam_beta2: 0.95
-  adam_weight_decay: 0.15
+  adam_weight_decay: 0.20
 
   # Early stopping
-  early_stopping_min_delta: 0.001
-  tokenizer_early_stopping_patience: 5
-  basemodel_early_stopping_patience: 5
+  early_stopping_min_delta: 0.0001
+  tokenizer_early_stopping_patience: 8
+  basemodel_early_stopping_patience: 4
 
   accumulation_steps: 1
 
