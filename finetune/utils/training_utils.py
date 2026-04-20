@@ -6,39 +6,40 @@ import torch
 import torch.distributed as dist
 
 
-def setup_ddp():
-    """
-    Initializes the distributed data parallel environment.
+def is_distributed() -> bool:
+    return dist.is_available() and dist.is_initialized()
 
-    Supports both torchrun-launched DDP and single-process fallback
-    (useful on Windows / 1-GPU setups).
-    """
+
+def setup_ddp():
     if not dist.is_available():
         raise RuntimeError("torch.distributed is not available.")
 
-    # Detect if we're under torchrun (env vars set) or single process
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", str(rank)))
 
+    if world_size <= 1:
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
+        print(f"[DDP Setup] Single-process mode. Rank: {rank}/{world_size}, Local Rank: {local_rank}")
+        return rank, world_size, local_rank
+
     if not dist.is_initialized():
-        # On Windows, use 'gloo' backend; nccl is not supported
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".store")
+        tmp.close()
+        store = dist.FileStore(tmp.name, world_size)
         dist.init_process_group(
             backend="gloo",
+            store=store,
             rank=rank,
             world_size=world_size,
         )
 
     if torch.cuda.is_available():
         torch.cuda.set_device(local_rank)
-        device = torch.device(f"cuda:{local_rank}")
-    else:
-        device = torch.device("cpu")
 
-    print(
-        f"[DDP Setup] Global Rank: {rank}/{world_size}, "
-        f"Local Rank: {local_rank}, Device: {device}"
-    )
+    print(f"[DDP Setup] Rank: {rank}/{world_size}, Local Rank: {local_rank}")
     return rank, world_size, local_rank
 
 
@@ -104,6 +105,8 @@ def reduce_tensor(tensor: torch.Tensor, world_size: int, op=dist.ReduceOp.SUM) -
         torch.Tensor: The reduced tensor, which will be identical on all processes.
     """
     rt = tensor.clone()
+    if not is_distributed() or world_size <= 1:
+        return rt
     dist.all_reduce(rt, op=op)
     # Note: `dist.ReduceOp.AVG` is available in newer torch versions.
     # For compatibility, manual division is sometimes used after a SUM.

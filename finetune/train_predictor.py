@@ -4,6 +4,7 @@ import sys
 import json
 import time
 from time import gmtime, strftime
+from pathlib import Path
 import torch.distributed as dist
 import torch
 from torch.utils.data import DataLoader
@@ -20,6 +21,7 @@ from model.kronos import KronosTokenizer, Kronos
 from utils.training_utils import (
     setup_ddp,
     cleanup_ddp,
+    is_distributed,
     set_seed,
     get_model_size,
     format_time
@@ -43,18 +45,23 @@ def create_dataloaders(config: dict, rank: int, world_size: int):
     valid_dataset = QlibDataset('val')
     print(f"[Rank {rank}] Train dataset size: {len(train_dataset)}, Validation dataset size: {len(valid_dataset)}")
 
-    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-    val_sampler = DistributedSampler(valid_dataset, num_replicas=world_size, rank=rank, shuffle=False)
+    use_ddp = world_size > 1 and is_distributed()
+    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True) if use_ddp else None
+    val_sampler = DistributedSampler(valid_dataset, num_replicas=world_size, rank=rank, shuffle=False) if use_ddp else None
 
     train_loader = DataLoader(
         train_dataset, batch_size=config['batch_size'], sampler=train_sampler,
-        num_workers=config.get('num_workers', 2), pin_memory=True, drop_last=True
+        shuffle=(train_sampler is None), num_workers=config.get('num_workers', 2), pin_memory=True, drop_last=True
     )
     val_loader = DataLoader(
         valid_dataset, batch_size=config['batch_size'], sampler=val_sampler,
         num_workers=config.get('num_workers', 2), pin_memory=True, drop_last=False
     )
     return train_loader, val_loader, train_dataset, valid_dataset
+
+
+def unwrap_model(model):
+    return model.module if isinstance(model, DDP) else model
 
 
 def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_size):
@@ -87,7 +94,8 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
     for epoch_idx in range(config['epochs']):
         epoch_start_time = time.time()
         model.train()
-        train_loader.sampler.set_epoch(epoch_idx)
+        if hasattr(train_loader.sampler, 'set_epoch'):
+            train_loader.sampler.set_epoch(epoch_idx)
 
         train_dataset.set_epoch_seed(epoch_idx * 10000 + rank)
         valid_dataset.set_epoch_seed(0)
@@ -105,8 +113,8 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
             token_out = [token_seq_0[:, 1:], token_seq_1[:, 1:]]
 
             # Forward pass and loss calculation
-            logits = model(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
-            loss, s1_loss, s2_loss = model.module.head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
+            logits = unwrap_model(model)(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
+            loss, s1_loss, s2_loss = unwrap_model(model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
 
             # Backward pass and optimization
             optimizer.zero_grad()
@@ -144,8 +152,8 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
                 token_in = [token_seq_0[:, :-1], token_seq_1[:, :-1]]
                 token_out = [token_seq_0[:, 1:], token_seq_1[:, 1:]]
 
-                logits = model(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
-                val_loss, _, _ = model.module.head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
+                logits = unwrap_model(model)(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
+                val_loss, _, _ = unwrap_model(model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
 
                 tot_val_loss_sum_rank += val_loss.item()
                 val_batches_processed_rank += 1
@@ -153,8 +161,9 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
         # Reduce validation metrics
         val_loss_sum_tensor = torch.tensor(tot_val_loss_sum_rank, device=device)
         val_batches_tensor = torch.tensor(val_batches_processed_rank, device=device)
-        dist.all_reduce(val_loss_sum_tensor, op=dist.ReduceOp.SUM)
-        dist.all_reduce(val_batches_tensor, op=dist.ReduceOp.SUM)
+        if is_distributed():
+            dist.all_reduce(val_loss_sum_tensor, op=dist.ReduceOp.SUM)
+            dist.all_reduce(val_batches_tensor, op=dist.ReduceOp.SUM)
 
         avg_val_loss = val_loss_sum_tensor.item() / val_batches_tensor.item() if val_batches_tensor.item() > 0 else 0
 
@@ -170,10 +179,11 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 save_path = f"{save_dir}/checkpoints/best_model"
-                model.module.save_pretrained(save_path)
+                unwrap_model(model).save_pretrained(save_path)
                 print(f"Best model saved to {save_path} (Val Loss: {best_val_loss:.4f})")
 
-        dist.barrier()
+        if is_distributed():
+            dist.barrier()
 
     dt_result['best_val_loss'] = best_val_loss
     return dt_result
@@ -196,29 +206,40 @@ def main(config: dict):
             'save_directory': save_dir,
             'world_size': world_size,
         }
-        if config['use_comet']:
+        comet_api_key = config.get('comet_config', {}).get('api_key')
+        comet_workspace = config.get('comet_config', {}).get('workspace')
+        if config['use_comet'] and comet_api_key and comet_workspace:
             comet_logger = comet_ml.Experiment(
-                api_key=config['comet_config']['api_key'],
+                api_key=comet_api_key,
                 project_name=config['comet_config']['project_name'],
-                workspace=config['comet_config']['workspace'],
+                workspace=comet_workspace,
             )
             comet_logger.add_tag(config['comet_tag'])
             comet_logger.set_name(config['comet_name'])
             comet_logger.log_parameters(config)
             print("Comet Logger Initialized.")
+        elif rank == 0 and config['use_comet']:
+            print("Comet logging requested but API key/workspace missing; continuing without Comet.")
 
-    dist.barrier()
+    if is_distributed():
+        dist.barrier()
 
     # Model Initialization
-    tokenizer = KronosTokenizer.from_pretrained(config['finetuned_tokenizer_path'])
+    tokenizer_path = config['finetuned_tokenizer_path']
+    if not Path(tokenizer_path).exists():
+        print(f"Tokenizer checkpoint not found at {tokenizer_path}; falling back to {config['pretrained_tokenizer_path']}.")
+        tokenizer_path = config['pretrained_tokenizer_path']
+
+    tokenizer = KronosTokenizer.from_pretrained(tokenizer_path)
     tokenizer.eval().to(device)
 
     model = Kronos.from_pretrained(config['pretrained_predictor_path'])
     model.to(device)
-    model = DDP(model, device_ids=[local_rank], find_unused_parameters=False)
+    if world_size > 1 and is_distributed():
+        model = DDP(model, device_ids=[local_rank], find_unused_parameters=False)
 
     if rank == 0:
-        print(f"Predictor Model Size: {get_model_size(model.module)}")
+        print(f"Predictor Model Size: {get_model_size(unwrap_model(model))}")
 
     # Start Training
     dt_result = train_model(
@@ -236,9 +257,8 @@ def main(config: dict):
 
 
 if __name__ == '__main__':
-    # Usage: torchrun --standalone --nproc_per_node=NUM_GPUS train_predictor.py
-    if "WORLD_SIZE" not in os.environ:
-        raise RuntimeError("This script must be launched with `torchrun`.")
+    if "KRONOS_CONFIG_PROFILE" not in os.environ:
+        os.environ["KRONOS_CONFIG_PROFILE"] = "bybit"
 
     config_instance = Config()
     main(config_instance.__dict__)
