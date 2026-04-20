@@ -9,7 +9,7 @@ class Config:
         # =================================================================
         # Data & Feature Parameters
         # =================================================================
-        # TODO: Update this path to your Qlib data directory.
+        # Path to the Qlib data directory for the default CN dataset.
         self.qlib_data_path = "~/.qlib/qlib_data/cn_data"
         self.instrument = 'csi300'
 
@@ -37,7 +37,7 @@ class Config:
         self.test_time_range = ["2024-04-01", "2025-06-05"]
         self.backtest_time_range = ["2024-07-01", "2025-06-05"]
 
-        # TODO: Directory to save the processed, pickled datasets.
+        # Directory to save the processed, pickled datasets.
         self.dataset_path = "./data/processed_datasets"
 
         # =================================================================
@@ -74,11 +74,10 @@ class Config:
         # =================================================================
         self.use_comet = True # Set to False if you don't want to use Comet ML
         self.comet_config = {
-            # It is highly recommended to load secrets from environment variables
-            # for security purposes. Example: os.getenv("COMET_API_KEY")
-            "api_key": "YOUR_COMET_API_KEY",
+            # Load secrets from environment variables for security.
+            "api_key": os.getenv("COMET_API_KEY", ""),
             "project_name": "Kronos-Finetune-Demo",
-            "workspace": "your_comet_workspace" # TODO: Change to your Comet ML workspace name
+            "workspace": os.getenv("COMET_WORKSPACE", "")
         }
         self.comet_tag = 'finetune_demo'
         self.comet_name = 'finetune_demo'
@@ -96,7 +95,6 @@ class Config:
         # =================================================================
         # Model & Checkpoint Paths
         # =================================================================
-        # TODO: Update these paths to your pretrained model locations.
         # These can be local paths or Hugging Face Hub model identifiers.
         self.pretrained_tokenizer_path = "path/to/your/Kronos-Tokenizer-base"
         self.pretrained_predictor_path = "path/to/your/Kronos-small"
@@ -106,18 +104,26 @@ class Config:
         self.finetuned_tokenizer_path = f"{self.save_path}/{self.tokenizer_save_folder_name}/checkpoints/best_model"
         self.finetuned_predictor_path = f"{self.save_path}/{self.predictor_save_folder_name}/checkpoints/best_model"
 
+        # Optional profile overrides for alternative datasets/configurations.
+        self._apply_profile_overrides()
+
         # =================================================================
         # Backtesting Parameters
         # =================================================================
         self.backtest_n_symbol_hold = 50  # Number of symbols to hold in the portfolio.
         self.backtest_n_symbol_drop = 5  # Number of symbols to drop from the pool.
         self.backtest_hold_thresh = 5  # Minimum holding period for a stock.
-        self.inference_T = 0.6
+        self.inference_t = 0.6
         self.inference_top_p = 0.9
         self.inference_top_k = 0
         self.inference_sample_count = 5
         self.backtest_batch_size = 1000
         self.backtest_benchmark = self._set_benchmark(self.instrument)
+
+    def __getattr__(self, name):
+        if name == "inference_T":
+            return self.inference_t
+        raise AttributeError(name)
 
     def _set_benchmark(self, instrument):
         dt_benchmark = {
@@ -129,3 +135,14 @@ class Config:
             return dt_benchmark[instrument]
         else:
             raise ValueError(f"Benchmark not defined for instrument: {instrument}")
+
+    def _apply_profile_overrides(self):
+        profile = os.getenv("KRONOS_CONFIG_PROFILE", "").strip().lower()
+        if profile != "bybit":
+            return
+
+        from config_bybit import get_bybit_config_overrides
+
+        overrides = get_bybit_config_overrides()
+        for key, value in overrides.items():
+            setattr(self, key, value)

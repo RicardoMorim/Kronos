@@ -170,10 +170,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--csv-1h", default="finetune_csv/data/bybit/bybit_BTCUSDT_60m.csv")
     parser.add_argument("--csv-5m", default="finetune_csv/data/bybit/bybit_BTCUSDT_5m.csv")
 
-    parser.add_argument("--model-1h", default="finetune_csv/finetuned/bybit_btcusdt_60m/basemodel/best_model")
-    parser.add_argument("--tokenizer-1h", default="finetune_csv/finetuned/bybit_btcusdt_60m/tokenizer/best_model")
-    parser.add_argument("--model-5m", default="finetune_csv/finetuned/bybit_btcusdt_5m/basemodel/best_model")
-    parser.add_argument("--tokenizer-5m", default="finetune_csv/finetuned/bybit_btcusdt_5m/tokenizer/best_model")
+    parser.add_argument("--model-1h", default="finetune/outputs/bybit_multi/bybit_predictor/checkpoints/best_model")
+    parser.add_argument("--tokenizer-1h", default="finetune/outputs/bybit_multi/bybit_tokenizer/checkpoints/best_model")
+    parser.add_argument("--model-5m", default="finetune/outputs/bybit_multi/bybit_predictor/checkpoints/best_model")
+    parser.add_argument("--tokenizer-5m", default="finetune/outputs/bybit_multi/bybit_tokenizer/checkpoints/best_model")
 
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--temperature", type=float, default=1.0)
