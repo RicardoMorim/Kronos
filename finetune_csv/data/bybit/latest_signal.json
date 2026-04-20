@@ -1,0 +1,30 @@
+{
+  "models": {
+    "1h": "finetune_csv/finetuned/bybit_btcusdt_60m/basemodel/best_model",
+    "5m": "finetune_csv/finetuned/bybit_btcusdt_5m/basemodel/best_model"
+  },
+  "tokenizers": {
+    "1h": "finetune_csv/finetuned/bybit_btcusdt_60m/tokenizer/best_model",
+    "5m": "finetune_csv/finetuned/bybit_btcusdt_5m/tokenizer/best_model"
+  },
+  "threshold_bps": 5.0,
+  "signals": {
+    "1h": {
+      "horizon": "1h",
+      "last_timestamp": "2026-04-19 18:00:00",
+      "forecast_timestamp": "2026-04-19 19:00:00",
+      "last_close": 74626.3,
+      "forecast_close": 74870.609375,
+      "signal": "long"
+    },
+    "5m": {
+      "horizon": "5m",
+      "last_timestamp": "2026-04-19 18:45:00",
+      "forecast_timestamp": "2026-04-19 18:50:00",
+      "last_close": 74626.3,
+      "forecast_close": 74704.3671875,
+      "signal": "long"
+    }
+  },
+  "final_signal": "long"
+}

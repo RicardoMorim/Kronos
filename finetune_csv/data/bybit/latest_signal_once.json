@@ -1,0 +1,34 @@
+{
+  "symbol": "BTCUSDT",
+  "category": "linear",
+  "models": {
+    "1h": "finetune_csv/finetuned/bybit_btcusdt_60m/basemodel/best_model",
+    "5m": "finetune_csv/finetuned/bybit_btcusdt_5m/basemodel/best_model"
+  },
+  "tokenizers": {
+    "1h": "finetune_csv/finetuned/bybit_btcusdt_60m/tokenizer/best_model",
+    "5m": "finetune_csv/finetuned/bybit_btcusdt_5m/tokenizer/best_model"
+  },
+  "threshold_bps": 5.0,
+  "signals": {
+    "1h": {
+      "horizon": "1h",
+      "interval": "60",
+      "last_timestamp": "2026-04-20 20:00:00",
+      "forecast_timestamp": "2026-04-20 21:00:00",
+      "last_close": 76136.5,
+      "forecast_close": 75927.421875,
+      "signal": "short"
+    },
+    "5m": {
+      "horizon": "5m",
+      "interval": "5",
+      "last_timestamp": "2026-04-20 20:05:00",
+      "forecast_timestamp": "2026-04-20 20:10:00",
+      "last_close": 76125.1,
+      "forecast_close": 76064.546875,
+      "signal": "short"
+    }
+  },
+  "final_signal": "short"
+}
