@@ -175,8 +175,9 @@ def train_tokenizer(model, device, config, save_dir, logger):
         max_lr=config.tokenizer_learning_rate,
         steps_per_epoch=len(train_loader),
         epochs=config.tokenizer_epochs,
-        pct_start=0.03,
-        div_factor=10
+        pct_start=0.1,
+        div_factor=25,
+        final_div_factor=1e4
     )
     
     if use_ddp:

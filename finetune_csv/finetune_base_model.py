@@ -111,7 +111,8 @@ class CustomKlineDataset(Dataset):
         
         if self.data_type == 'train':
             epoch = getattr(self, 'current_epoch', 0)
-            start_idx = (idx * 9973 + (epoch + 1) * 104729) % (max_start + 1)
+            rng = np.random.default_rng(seed=self.seed + epoch * 100003 + idx)
+            start_idx = int(rng.integers(0, max_start + 1))
         else:
             start_idx = idx % (max_start + 1)
         
@@ -263,8 +264,9 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
         max_lr=config.predictor_learning_rate,
         steps_per_epoch=len(train_loader),
         epochs=config.basemodel_epochs,
-        pct_start=0.03,
-        div_factor=10
+        pct_start=0.1,
+        div_factor=25,
+        final_div_factor=1e4
     )
     
     if use_ddp:
