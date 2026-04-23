@@ -47,7 +47,7 @@ class Config:
 
         self.epochs = 30
         self.log_interval = 100  # Log training status every N batches.
-        self.batch_size = 50  # Batch size per GPU.
+        self.batch_size = 30  # Batch size per GPU.
 
         # Number of samples to draw for one "epoch" of training/validation.
         # This is useful for large datasets where a true epoch is too long.
@@ -60,6 +60,8 @@ class Config:
 
         # Gradient accumulation to simulate a larger batch size.
         self.accumulation_steps = 1
+        self.predictor_accumulation_steps = 1
+        self.predictor_batch_size = self.batch_size
 
         # AdamW optimizer parameters.
         self.adam_beta1 = 0.9
@@ -119,6 +121,13 @@ class Config:
         self.inference_sample_count = 5
         self.backtest_batch_size = 1000
         self.backtest_benchmark = self._set_benchmark(self.instrument)
+        self.workers = 0
+        self.num_workers = 0
+        self.predictor_num_workers = self.num_workers
+        self.pin_memory = True
+        self.persistent_workers = False
+        self.prefetch_factor = None
+        self.use_amp = True
 
     def __getattr__(self, name):
         if name == "inference_T":

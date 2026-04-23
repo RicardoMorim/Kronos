@@ -1,23 +1,53 @@
 from __future__ import annotations
+import os
 
 from config import Config
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    return int(value)
+
+
+def _env_str(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    return value.strip()
 
 
 def get_bybit_config_overrides() -> dict[str, object]:
     """Return the Bybit fine-tuning overrides without instantiating Config again."""
 
+    # Safer defaults for single-GPU consumer setups (Windows-friendly).
+    predictor_batch_size = _env_int("KRONOS_PREDICTOR_BATCH_SIZE", 8)
+    predictor_accumulation_steps = _env_int("KRONOS_PREDICTOR_ACC_STEPS", 8)
+
     return {
         "dataset_path": "./data/bybit_multi",
-        "lookback_window": 512,
-        "predict_window": 48,
+        "lookback_window": _env_int("KRONOS_LOOKBACK_WINDOW", 384),
+        "predict_window": _env_int("KRONOS_PREDICT_WINDOW", 24),
+        "max_context": 512,
         "pretrained_tokenizer_path": "NeoQuasar/Kronos-Tokenizer-base",
-        "pretrained_predictor_path": "NeoQuasar/Kronos-base",
+        "pretrained_predictor_path": _env_str("KRONOS_PRETRAINED_PREDICTOR", "NeoQuasar/Kronos-small"),
         "epochs": 30,
-        "batch_size": 64,
-        "n_train_iter": 4000 * 64,
-        "n_val_iter": 600 * 64,
+        "batch_size": _env_int("KRONOS_TOKENIZER_BATCH_SIZE", 16),
+        "predictor_batch_size": predictor_batch_size,
+        "predictor_accumulation_steps": predictor_accumulation_steps,
+        "accumulation_steps": 1,
+        "num_workers": 0,
+        "predictor_num_workers": 0,
+        "pin_memory": False,
+        "persistent_workers": False,
+        "n_train_iter": 4000 * predictor_batch_size,
+        "n_val_iter": 600 * predictor_batch_size,
         "adam_weight_decay": 0.15,
         "use_comet": False,
+        "use_amp": True,
+        "predictor_tokenizer_device": _env_str("KRONOS_PREDICTOR_TOKENIZER_DEVICE", "cpu"),
+        "empty_cuda_cache_each_epoch": True,
         "save_path": "./outputs/bybit_multi",
         "tokenizer_save_folder_name": "bybit_tokenizer",
         "predictor_save_folder_name": "bybit_predictor",

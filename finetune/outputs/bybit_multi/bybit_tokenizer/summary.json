@@ -1,0 +1,8 @@
+{
+    "start_time": "2026-04-22T21-31-20",
+    "save_directory": "./outputs/bybit_multi\\bybit_tokenizer",
+    "world_size": 1,
+    "final_result": {
+        "best_val_loss": 0.0025354784727096556
+    }
+}

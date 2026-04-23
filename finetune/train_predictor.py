@@ -3,6 +3,7 @@ os.environ["USE_LIBUV"] = "0"
 import sys
 import json
 import time
+import math
 from time import gmtime, strftime
 from pathlib import Path
 import torch.distributed as dist
@@ -45,18 +46,46 @@ def create_dataloaders(config: dict, rank: int, world_size: int):
     valid_dataset = QlibDataset('val')
     print(f"[Rank {rank}] Train dataset size: {len(train_dataset)}, Validation dataset size: {len(valid_dataset)}")
 
+    batch_size = int(config.get('predictor_batch_size', config['batch_size']))
+    num_workers = int(config.get('predictor_num_workers', config.get('num_workers', config.get('workers', 0))))
+    pin_memory = bool(config.get('pin_memory', True))
+    dataloader_kwargs = {
+        'num_workers': num_workers,
+        'pin_memory': pin_memory,
+        'drop_last': True,
+    }
+    val_dataloader_kwargs = {
+        'num_workers': num_workers,
+        'pin_memory': pin_memory,
+        'drop_last': False,
+    }
+    if num_workers > 0:
+        dataloader_kwargs['persistent_workers'] = bool(config.get('persistent_workers', False))
+        val_dataloader_kwargs['persistent_workers'] = bool(config.get('persistent_workers', False))
+        prefetch_factor = config.get('prefetch_factor', None)
+        if prefetch_factor is not None:
+            dataloader_kwargs['prefetch_factor'] = int(prefetch_factor)
+            val_dataloader_kwargs['prefetch_factor'] = int(prefetch_factor)
+
     use_ddp = world_size > 1 and is_distributed()
     train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True) if use_ddp else None
     val_sampler = DistributedSampler(valid_dataset, num_replicas=world_size, rank=rank, shuffle=False) if use_ddp else None
 
     train_loader = DataLoader(
-        train_dataset, batch_size=config['batch_size'], sampler=train_sampler,
-        shuffle=(train_sampler is None), num_workers=config.get('num_workers', 2), pin_memory=True, drop_last=True
+        train_dataset, batch_size=batch_size, sampler=train_sampler,
+        shuffle=(train_sampler is None), **dataloader_kwargs
     )
     val_loader = DataLoader(
-        valid_dataset, batch_size=config['batch_size'], sampler=val_sampler,
-        num_workers=config.get('num_workers', 2), pin_memory=True, drop_last=False
+        valid_dataset, batch_size=batch_size, sampler=val_sampler,
+        **val_dataloader_kwargs
     )
+
+    if rank == 0:
+        print(
+            f"Predictor DataLoader config -> batch_size={batch_size}, num_workers={num_workers}, "
+            f"pin_memory={pin_memory}, persistent_workers={dataloader_kwargs.get('persistent_workers', False)}"
+        )
+
     return train_loader, val_loader, train_dataset, valid_dataset
 
 
@@ -69,9 +98,17 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
     The main training and validation loop for the predictor.
     """
     start_time = time.time()
+    predictor_batch_size = int(config.get('predictor_batch_size', config['batch_size']))
+    accumulation_steps = max(1, int(config.get('predictor_accumulation_steps', 1)))
+    use_amp = bool(config.get('use_amp', True)) and device.type == 'cuda'
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    tokenizer_device = next(tokenizer.parameters()).device
+
     if rank == 0:
-        effective_bs = config['batch_size'] * world_size
-        print(f"Effective BATCHSIZE per GPU: {config['batch_size']}, Total: {effective_bs}")
+        effective_bs = predictor_batch_size * world_size * accumulation_steps
+        print(f"Effective Predictor BATCHSIZE per GPU: {predictor_batch_size}, Total effective: {effective_bs}")
+        print(f"Predictor AMP enabled: {use_amp}, accumulation_steps: {accumulation_steps}")
+        print(f"Tokenizer device for predictor training: {tokenizer_device}")
 
     train_loader, val_loader, train_dataset, valid_dataset = create_dataloaders(config, rank, world_size)
 
@@ -83,7 +120,7 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
     )
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer, max_lr=config['predictor_learning_rate'],
-        steps_per_epoch=len(train_loader), epochs=config['epochs'],
+        steps_per_epoch=max(1, math.ceil(len(train_loader) / accumulation_steps)), epochs=config['epochs'],
         pct_start=0.03, div_factor=10
     )
 
@@ -94,6 +131,7 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
     for epoch_idx in range(config['epochs']):
         epoch_start_time = time.time()
         model.train()
+        optimizer.zero_grad(set_to_none=True)
         if hasattr(train_loader.sampler, 'set_epoch'):
             train_loader.sampler.set_epoch(epoch_idx)
 
@@ -101,27 +139,40 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
         valid_dataset.set_epoch_seed(0)
 
         for i, (batch_x, batch_x_stamp) in enumerate(train_loader):
-            batch_x = batch_x.to(device, non_blocking=True)
             batch_x_stamp = batch_x_stamp.to(device, non_blocking=True)
 
             # Tokenize input data on-the-fly
             with torch.no_grad():
-                token_seq_0, token_seq_1 = tokenizer.encode(batch_x, half=True)
+                batch_x_for_tokenizer = batch_x.to(tokenizer_device, non_blocking=(tokenizer_device.type == 'cuda'))
+                if tokenizer_device.type == 'cuda':
+                    with torch.cuda.amp.autocast(enabled=use_amp):
+                        token_seq_0, token_seq_1 = tokenizer.encode(batch_x_for_tokenizer, half=True)
+                else:
+                    token_seq_0, token_seq_1 = tokenizer.encode(batch_x_for_tokenizer, half=True)
+
+            token_seq_0 = token_seq_0.to(device, non_blocking=True)
+            token_seq_1 = token_seq_1.to(device, non_blocking=True)
 
             # Prepare inputs and targets for the language model
             token_in = [token_seq_0[:, :-1], token_seq_1[:, :-1]]
             token_out = [token_seq_0[:, 1:], token_seq_1[:, 1:]]
 
             # Forward pass and loss calculation
-            logits = unwrap_model(model)(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
-            loss, s1_loss, s2_loss = unwrap_model(model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                logits = unwrap_model(model)(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
+                loss, s1_loss, s2_loss = unwrap_model(model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
 
             # Backward pass and optimization
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
-            optimizer.step()
-            scheduler.step()
+            loss_scaled = loss / accumulation_steps
+            scaler.scale(loss_scaled).backward()
+            should_step = ((i + 1) % accumulation_steps == 0) or ((i + 1) == len(train_loader))
+            if should_step:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
+                scheduler.step()
 
             # Logging (Master Process Only)
             if rank == 0 and (batch_idx_global + 1) % config['log_interval'] == 0:
@@ -145,15 +196,23 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
         val_batches_processed_rank = 0
         with torch.no_grad():
             for batch_x, batch_x_stamp in val_loader:
-                batch_x = batch_x.to(device, non_blocking=True)
                 batch_x_stamp = batch_x_stamp.to(device, non_blocking=True)
 
-                token_seq_0, token_seq_1 = tokenizer.encode(batch_x, half=True)
+                batch_x_for_tokenizer = batch_x.to(tokenizer_device, non_blocking=(tokenizer_device.type == 'cuda'))
+                if tokenizer_device.type == 'cuda':
+                    with torch.cuda.amp.autocast(enabled=use_amp):
+                        token_seq_0, token_seq_1 = tokenizer.encode(batch_x_for_tokenizer, half=True)
+                else:
+                    token_seq_0, token_seq_1 = tokenizer.encode(batch_x_for_tokenizer, half=True)
+
+                token_seq_0 = token_seq_0.to(device, non_blocking=True)
+                token_seq_1 = token_seq_1.to(device, non_blocking=True)
                 token_in = [token_seq_0[:, :-1], token_seq_1[:, :-1]]
                 token_out = [token_seq_0[:, 1:], token_seq_1[:, 1:]]
 
-                logits = unwrap_model(model)(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
-                val_loss, _, _ = unwrap_model(model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    logits = unwrap_model(model)(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
+                    val_loss, _, _ = unwrap_model(model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
 
                 tot_val_loss_sum_rank += val_loss.item()
                 val_batches_processed_rank += 1
@@ -181,6 +240,9 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
                 save_path = f"{save_dir}/checkpoints/best_model"
                 unwrap_model(model).save_pretrained(save_path)
                 print(f"Best model saved to {save_path} (Val Loss: {best_val_loss:.4f})")
+
+            if device.type == 'cuda' and bool(config.get('empty_cuda_cache_each_epoch', True)):
+                torch.cuda.empty_cache()
 
         if is_distributed():
             dist.barrier()
@@ -231,7 +293,13 @@ def main(config: dict):
         tokenizer_path = config['pretrained_tokenizer_path']
 
     tokenizer = KronosTokenizer.from_pretrained(tokenizer_path)
-    tokenizer.eval().to(device)
+    tokenizer_device_cfg = str(config.get('predictor_tokenizer_device', 'cpu')).strip().lower()
+    if tokenizer_device_cfg.startswith('cuda') and torch.cuda.is_available():
+        tokenizer_device = device
+    else:
+        tokenizer_device = torch.device('cpu')
+    tokenizer.eval().to(tokenizer_device)
+    tokenizer.requires_grad_(False)
 
     model = Kronos.from_pretrained(config['pretrained_predictor_path'])
     model.to(device)
@@ -240,6 +308,7 @@ def main(config: dict):
 
     if rank == 0:
         print(f"Predictor Model Size: {get_model_size(unwrap_model(model))}")
+        print(f"Predictor model device: {device}, tokenizer device: {tokenizer_device}")
 
     # Start Training
     dt_result = train_model(
