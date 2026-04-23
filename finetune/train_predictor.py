@@ -30,17 +30,6 @@ from utils.training_utils import (
 
 
 def create_dataloaders(config: dict, rank: int, world_size: int):
-    """
-    Creates and returns distributed dataloaders for training and validation.
-
-    Args:
-        config (dict): A dictionary of configuration parameters.
-        rank (int): The global rank of the current process.
-        world_size (int): The total number of processes.
-
-    Returns:
-        tuple: (train_loader, val_loader, train_dataset, valid_dataset).
-    """
     print(f"[Rank {rank}] Creating distributed dataloaders...")
     train_dataset = QlibDataset('train')
     valid_dataset = QlibDataset('val')
@@ -94,14 +83,11 @@ def unwrap_model(model):
 
 
 def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_size):
-    """
-    The main training and validation loop for the predictor.
-    """
     start_time = time.time()
     predictor_batch_size = int(config.get('predictor_batch_size', config['batch_size']))
     accumulation_steps = max(1, int(config.get('predictor_accumulation_steps', 1)))
     use_amp = bool(config.get('use_amp', True)) and device.type == 'cuda'
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
     tokenizer_device = next(tokenizer.parameters()).device
 
     if rank == 0:
@@ -120,8 +106,10 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
     )
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer, max_lr=config['predictor_learning_rate'],
-        steps_per_epoch=max(1, math.ceil(len(train_loader) / accumulation_steps)), epochs=config['epochs'],
-        pct_start=0.03, div_factor=10
+        steps_per_epoch=max(1, math.ceil(len(train_loader) / accumulation_steps)),
+        epochs=config['epochs'],
+        pct_start=0.1,
+        div_factor=10
     )
 
     best_val_loss = float('inf')
@@ -141,11 +129,10 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
         for i, (batch_x, batch_x_stamp) in enumerate(train_loader):
             batch_x_stamp = batch_x_stamp.to(device, non_blocking=True)
 
-            # Tokenize input data on-the-fly
             with torch.no_grad():
                 batch_x_for_tokenizer = batch_x.to(tokenizer_device, non_blocking=(tokenizer_device.type == 'cuda'))
                 if tokenizer_device.type == 'cuda':
-                    with torch.cuda.amp.autocast(enabled=use_amp):
+                    with torch.amp.autocast('cuda', enabled=use_amp):
                         token_seq_0, token_seq_1 = tokenizer.encode(batch_x_for_tokenizer, half=True)
                 else:
                     token_seq_0, token_seq_1 = tokenizer.encode(batch_x_for_tokenizer, half=True)
@@ -153,16 +140,13 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
             token_seq_0 = token_seq_0.to(device, non_blocking=True)
             token_seq_1 = token_seq_1.to(device, non_blocking=True)
 
-            # Prepare inputs and targets for the language model
             token_in = [token_seq_0[:, :-1], token_seq_1[:, :-1]]
             token_out = [token_seq_0[:, 1:], token_seq_1[:, 1:]]
 
-            # Forward pass and loss calculation
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with torch.amp.autocast('cuda', enabled=use_amp):
                 logits = unwrap_model(model)(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
                 loss, s1_loss, s2_loss = unwrap_model(model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
 
-            # Backward pass and optimization
             loss_scaled = loss / accumulation_steps
             scaler.scale(loss_scaled).backward()
             should_step = ((i + 1) % accumulation_steps == 0) or ((i + 1) == len(train_loader))
@@ -174,7 +158,6 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
                 optimizer.zero_grad(set_to_none=True)
                 scheduler.step()
 
-            # Logging (Master Process Only)
             if rank == 0 and (batch_idx_global + 1) % config['log_interval'] == 0:
                 lr = optimizer.param_groups[0]['lr']
                 print(
@@ -200,7 +183,7 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
 
                 batch_x_for_tokenizer = batch_x.to(tokenizer_device, non_blocking=(tokenizer_device.type == 'cuda'))
                 if tokenizer_device.type == 'cuda':
-                    with torch.cuda.amp.autocast(enabled=use_amp):
+                    with torch.amp.autocast('cuda', enabled=use_amp):
                         token_seq_0, token_seq_1 = tokenizer.encode(batch_x_for_tokenizer, half=True)
                 else:
                     token_seq_0, token_seq_1 = tokenizer.encode(batch_x_for_tokenizer, half=True)
@@ -210,14 +193,13 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
                 token_in = [token_seq_0[:, :-1], token_seq_1[:, :-1]]
                 token_out = [token_seq_0[:, 1:], token_seq_1[:, 1:]]
 
-                with torch.cuda.amp.autocast(enabled=use_amp):
+                with torch.amp.autocast('cuda', enabled=use_amp):
                     logits = unwrap_model(model)(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
                     val_loss, _, _ = unwrap_model(model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
 
                 tot_val_loss_sum_rank += val_loss.item()
                 val_batches_processed_rank += 1
 
-        # Reduce validation metrics
         val_loss_sum_tensor = torch.tensor(tot_val_loss_sum_rank, device=device)
         val_batches_tensor = torch.tensor(val_batches_processed_rank, device=device)
         if is_distributed():
@@ -226,7 +208,6 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
 
         avg_val_loss = val_loss_sum_tensor.item() / val_batches_tensor.item() if val_batches_tensor.item() > 0 else 0
 
-        # --- End of Epoch Summary & Checkpointing (Master Process Only) ---
         if rank == 0:
             print(f"\n--- Epoch {epoch_idx + 1}/{config['epochs']} Summary ---")
             print(f"Validation Loss: {avg_val_loss:.4f}")
@@ -252,14 +233,12 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
 
 
 def main(config: dict):
-    """Main function to orchestrate the DDP training process."""
     rank, world_size, local_rank = setup_ddp()
     device = torch.device(f"cuda:{local_rank}")
     set_seed(config['seed'], rank)
 
     save_dir = os.path.join(config['save_path'], config['predictor_save_folder_name'])
 
-    # Logger and summary setup (master process only)
     comet_logger, master_summary = None, {}
     if rank == 0:
         os.makedirs(os.path.join(save_dir, 'checkpoints'), exist_ok=True)
@@ -286,7 +265,6 @@ def main(config: dict):
     if is_distributed():
         dist.barrier()
 
-    # Model Initialization
     tokenizer_path = config['finetuned_tokenizer_path']
     if not Path(tokenizer_path).exists():
         print(f"Tokenizer checkpoint not found at {tokenizer_path}; falling back to {config['pretrained_tokenizer_path']}.")
@@ -310,7 +288,6 @@ def main(config: dict):
         print(f"Predictor Model Size: {get_model_size(unwrap_model(model))}")
         print(f"Predictor model device: {device}, tokenizer device: {tokenizer_device}")
 
-    # Start Training
     dt_result = train_model(
         model, tokenizer, device, config, save_dir, comet_logger, rank, world_size
     )
