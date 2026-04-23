@@ -21,8 +21,9 @@ def _env_str(name: str, default: str) -> str:
 def get_bybit_config_overrides() -> dict[str, object]:
     """Return the Bybit fine-tuning overrides without instantiating Config again."""
 
-    predictor_batch_size = _env_int("KRONOS_PREDICTOR_BATCH_SIZE", 8)
-    predictor_accumulation_steps = _env_int("KRONOS_PREDICTOR_ACC_STEPS", 8)
+    # Safer defaults for single-GPU consumer setups (Windows-friendly).
+    predictor_batch_size = _env_int("KRONOS_PREDICTOR_BATCH_SIZE", 4)
+    predictor_accumulation_steps = _env_int("KRONOS_PREDICTOR_ACC_STEPS", 16)
 
     return {
         "dataset_path": "./data/bybit_multi",
@@ -30,7 +31,7 @@ def get_bybit_config_overrides() -> dict[str, object]:
         "predict_window": _env_int("KRONOS_PREDICT_WINDOW", 24),
         "max_context": 512,
         "pretrained_tokenizer_path": "NeoQuasar/Kronos-Tokenizer-base",
-        "pretrained_predictor_path": _env_str("KRONOS_PRETRAINED_PREDICTOR", "NeoQuasar/Kronos-small"),
+        "pretrained_predictor_path": _env_str("KRONOS_PRETRAINED_PREDICTOR", "NeoQuasar/Kronos-base"),
         "finetuned_tokenizer_path": "./outputs/bybit_multi/bybit_tokenizer/checkpoints/best_model",
         "finetuned_predictor_path": "./outputs/bybit_multi/bybit_predictor/checkpoints/best_model",
         "epochs": 30,
@@ -45,7 +46,7 @@ def get_bybit_config_overrides() -> dict[str, object]:
         "n_train_iter": 4000 * predictor_batch_size,
         "n_val_iter": 600 * predictor_batch_size,
         "predictor_learning_rate": 1e-4,
-        "adam_weight_decay": 0.15,
+        "adam_weight_decay": 0.25,
         "use_comet": False,
         "use_amp": True,
         "predictor_tokenizer_device": _env_str("KRONOS_PREDICTOR_TOKENIZER_DEVICE", "cuda"),
