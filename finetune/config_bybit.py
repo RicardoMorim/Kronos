@@ -21,7 +21,6 @@ def _env_str(name: str, default: str) -> str:
 def get_bybit_config_overrides() -> dict[str, object]:
     """Return the Bybit fine-tuning overrides without instantiating Config again."""
 
-    # Safer defaults for single-GPU consumer setups (Windows-friendly).
     predictor_batch_size = _env_int("KRONOS_PREDICTOR_BATCH_SIZE", 8)
     predictor_accumulation_steps = _env_int("KRONOS_PREDICTOR_ACC_STEPS", 8)
 
@@ -32,6 +31,8 @@ def get_bybit_config_overrides() -> dict[str, object]:
         "max_context": 512,
         "pretrained_tokenizer_path": "NeoQuasar/Kronos-Tokenizer-base",
         "pretrained_predictor_path": _env_str("KRONOS_PRETRAINED_PREDICTOR", "NeoQuasar/Kronos-small"),
+        "finetuned_tokenizer_path": "./outputs/bybit_multi/bybit_tokenizer/checkpoints/best_model",
+        "finetuned_predictor_path": "./outputs/bybit_multi/bybit_predictor/checkpoints/best_model",
         "epochs": 30,
         "batch_size": _env_int("KRONOS_TOKENIZER_BATCH_SIZE", 16),
         "predictor_batch_size": predictor_batch_size,
