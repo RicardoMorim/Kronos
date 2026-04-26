@@ -57,6 +57,11 @@ def get_bybit_config_overrides() -> dict[str, object]:
         "backtest_save_folder_name": "bybit_backtest",
         "train_time_range": ["2011-01-01", "2025-09-30"],
         "val_time_range": ["2025-07-01", "2026-03-31"],
+        # Early stopping: stop after N epochs without val improvement.
+        "early_stopping_patience": 5,
+        # Freeze backbone during predictor fine-tuning (set True to save memory/compute).
+        "predictor_freeze_backbone": False,
+        "predictor_unfreeze_last_n_blocks": 2,
     }
 
 
