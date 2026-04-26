@@ -113,10 +113,28 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
     )
 
     best_val_loss = float('inf')
-    dt_result = {}
+    start_epoch = 0
     batch_idx_global = 0
+    dt_result = {}
 
-    for epoch_idx in range(config['epochs']):
+    # --- Resume training state if available ---
+    training_state_path = os.path.join(save_dir, 'checkpoints', 'training_state.pt')
+    if os.path.exists(training_state_path):
+        if rank == 0:
+            print(f"[Resume] Loading training state from {training_state_path}")
+        state = torch.load(training_state_path, map_location=device)
+        optimizer.load_state_dict(state['optimizer'])
+        scheduler.load_state_dict(state['scheduler'])
+        start_epoch = state['epoch'] + 1
+        best_val_loss = state['best_val_loss']
+        batch_idx_global = state.get('batch_idx_global', 0)
+        if rank == 0:
+            print(f"[Resume] Resuming from epoch {start_epoch + 1}/{config['epochs']}, best_val_loss={best_val_loss:.4f}")
+    else:
+        if rank == 0:
+            print("[Resume] No training state found, starting from scratch.")
+
+    for epoch_idx in range(start_epoch, config['epochs']):
         epoch_start_time = time.time()
         model.train()
         optimizer.zero_grad(set_to_none=True)
@@ -221,6 +239,15 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
                 save_path = f"{save_dir}/checkpoints/best_model"
                 unwrap_model(model).save_pretrained(save_path)
                 print(f"Best model saved to {save_path} (Val Loss: {best_val_loss:.4f})")
+
+            # Always save training state so we can resume from interruptions
+            torch.save({
+                'epoch': epoch_idx,
+                'optimizer': optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
+                'best_val_loss': best_val_loss,
+                'batch_idx_global': batch_idx_global,
+            }, training_state_path)
 
             if device.type == 'cuda' and bool(config.get('empty_cuda_cache_each_epoch', True)):
                 torch.cuda.empty_cache()
