@@ -72,6 +72,20 @@ class Config:
         self.seed = 100  # Global random seed for reproducibility.
 
         # =================================================================
+        # Early Stopping
+        # =================================================================
+        # Number of epochs without validation improvement before stopping.
+        self.early_stopping_patience = 5
+
+        # =================================================================
+        # Predictor Freeze Strategy
+        # =================================================================
+        # Set to True to freeze the backbone and only train the last N transformer
+        # blocks and the head. Useful for fine-tuning with limited data/compute.
+        self.predictor_freeze_backbone = False
+        self.predictor_unfreeze_last_n_blocks = 2
+
+        # =================================================================
         # Experiment Logging & Saving
         # =================================================================
         self.use_comet = True # Set to False if you don't want to use Comet ML
