@@ -82,6 +82,48 @@ def unwrap_model(model):
     return model.module if isinstance(model, DDP) else model
 
 
+def configure_predictor_trainable_params(model, config: dict, rank: int):
+    base_model = unwrap_model(model)
+    freeze_backbone = bool(config.get('predictor_freeze_backbone', False))
+
+    if not freeze_backbone:
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+        if rank == 0:
+            print("Predictor freeze strategy disabled. Training all model parameters.")
+        return trainable_params
+
+    for param in base_model.parameters():
+        param.requires_grad = False
+
+    last_n_blocks = max(1, int(config.get('predictor_unfreeze_last_n_blocks', 2)))
+    total_blocks = len(base_model.transformer) if hasattr(base_model, 'transformer') else 0
+    start_block_idx = max(0, total_blocks - last_n_blocks)
+
+    for block_idx in range(start_block_idx, total_blocks):
+        for param in base_model.transformer[block_idx].parameters():
+            param.requires_grad = True
+
+    for param in base_model.head.parameters():
+        param.requires_grad = True
+
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    if not trainable_params:
+        raise RuntimeError("No trainable parameters after applying predictor freeze strategy.")
+
+    if rank == 0:
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_param_count = sum(p.numel() for p in trainable_params)
+        print(
+            f"Predictor freeze strategy enabled: unfroze transformer blocks [{start_block_idx}, {total_blocks - 1}] and head."
+        )
+        print(
+            f"Trainable parameters: {trainable_param_count:,}/{total_params:,} "
+            f"({100.0 * trainable_param_count / max(1, total_params):.2f}%)"
+        )
+
+    return trainable_params
+
+
 def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_size):
     start_time = time.time()
     predictor_batch_size = int(config.get('predictor_batch_size', config['batch_size']))
@@ -98,8 +140,10 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
 
     train_loader, val_loader, train_dataset, valid_dataset = create_dataloaders(config, rank, world_size)
 
+    trainable_params = configure_predictor_trainable_params(model, config, rank)
+
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        trainable_params,
         lr=config['predictor_learning_rate'],
         betas=(config['adam_beta1'], config['adam_beta2']),
         weight_decay=config['adam_weight_decay']
@@ -113,6 +157,8 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
     )
 
     best_val_loss = float('inf')
+    patience = config.get('early_stopping_patience', 5)
+    no_improve_count = 0
     start_epoch = 0
     batch_idx_global = 0
     dt_result = {}
@@ -127,15 +173,17 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
         scheduler.load_state_dict(state['scheduler'])
         start_epoch = state['epoch'] + 1
         best_val_loss = state['best_val_loss']
+        no_improve_count = state.get('no_improve_count', 0)
         batch_idx_global = state.get('batch_idx_global', 0)
         if rank == 0:
-            print(f"[Resume] Resuming from epoch {start_epoch + 1}/{config['epochs']}, best_val_loss={best_val_loss:.4f}")
+            print(f"[Resume] Resuming from epoch {start_epoch + 1}/{config['epochs']}, best_val_loss={best_val_loss:.4f}, no_improve_count={no_improve_count}/{patience}")
     else:
         if rank == 0:
             print("[Resume] No training state found, starting from scratch.")
 
     for epoch_idx in range(start_epoch, config['epochs']):
         epoch_start_time = time.time()
+        should_stop = False
         model.train()
         optimizer.zero_grad(set_to_none=True)
         if hasattr(train_loader.sampler, 'set_epoch'):
@@ -170,7 +218,7 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
             should_step = ((i + 1) % accumulation_steps == 0) or ((i + 1) == len(train_loader))
             if should_step:
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
+                torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=3.0)
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
@@ -236,9 +284,16 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
 
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
+                no_improve_count = 0
                 save_path = f"{save_dir}/checkpoints/best_model"
                 unwrap_model(model).save_pretrained(save_path)
                 print(f"Best model saved to {save_path} (Val Loss: {best_val_loss:.4f})")
+            else:
+                no_improve_count += 1
+                print(f"No improvement for {no_improve_count}/{patience} epochs.")
+                if no_improve_count >= patience:
+                    print(f"Early stopping triggered at epoch {epoch_idx + 1}.")
+                    should_stop = True
 
             # Always save training state so we can resume from interruptions
             torch.save({
@@ -246,11 +301,20 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
                 'optimizer': optimizer.state_dict(),
                 'scheduler': scheduler.state_dict(),
                 'best_val_loss': best_val_loss,
+                'no_improve_count': no_improve_count,
                 'batch_idx_global': batch_idx_global,
             }, training_state_path)
 
             if device.type == 'cuda' and bool(config.get('empty_cuda_cache_each_epoch', True)):
                 torch.cuda.empty_cache()
+
+        # Broadcast early stop decision to all ranks
+        stop_tensor = torch.tensor(1 if should_stop else 0, device=device)
+        if is_distributed():
+            dist.broadcast(stop_tensor, src=0)
+
+        if stop_tensor.item() == 1:
+            break
 
         if is_distributed():
             dist.barrier()
